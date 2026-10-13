@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "async"
-require "async/promise"
 require "extralite"
 require "json"
 require "rbnacl"
@@ -16,12 +15,15 @@ module Sodium
   sodium_function :verify32, :crypto_verify_32, %i[pointer pointer]
 end
 
-# One SQLite connection, owned by the single reactor thread. SQLite renders every response
-# document, so Ruby only routes, verifies the JWT and hands bytes to Falcon.
+# One SQLite connection, used only by one executor fiber. SQLite renders every response document,
+# so Ruby only routes, verifies the JWT and hands bytes to Falcon.
 #
-# Group commit: the first write in a reactor pass opens BEGIN IMMEDIATE and schedules one COMMIT
-# for the next pass. Every write in between joins that transaction, and every response waits for
-# the COMMIT. Reads that run while a batch is open may have seen its rows, so they wait too.
+# Request fibers queue a job and suspend; the executor runs every job queued during a reactor pass
+# in one go. If any of them writes, the whole pass runs inside one BEGIN IMMEDIATE ... COMMIT (group
+# commit), and nobody in it is resumed before the COMMIT, so reads that saw new rows answer after
+# they are durable too. Running SQLite only on the executor's stack also keeps the stacks of the
+# (many, mostly idle) connection fibers shallow: SQLite's deep C frames would otherwise stay
+# resident in every connection's fiber stack.
 class Store
   POST_JSON = "json_object('id',p.id,'body',p.body,'created_at',p.created_at,'author',u.username," \
               "'like_count',(SELECT count(*) FROM likes l WHERE l.post_id=p.id))"
@@ -53,74 +55,110 @@ class Store
     @like = @db.prepare_splat(LIKE)
     @exists = @db.prepare_splat(EXISTS)
     @ping = @db.prepare_splat("SELECT 1")
-    @batch = nil
+    @queue = []
+    @executor = nil
+    @idle = false
+  end
+
+  Job = Struct.new(:kind, :a, :b, :c, :fiber, :result, :error)
+
+  # Starts the executor; call from inside the reactor.
+  def start
+    Async { run }
   end
 
   def feed
-    document = @feed.reset.next
-    @batch&.wait
-    document
+    submit(Job.new(:feed))
   end
 
   def post(id)
-    document = @post.reset.bind(id).next
-    @batch&.wait
-    document
+    submit(Job.new(:post, id))
   end
 
   def create(user_id, username, body)
-    batch = begin_batch
-    document = @create.reset.bind(user_id, body, username).next
-    @create.reset # finish the statement so COMMIT doesn't see it in progress
-    batch.wait
-    document
+    submit(Job.new(:create, user_id, username, body))
   end
 
   # Returns :liked, :already_liked or :missing.
   def like(user_id, post_id)
-    batch = begin_batch
-    outcome = if @like.execute(user_id, post_id) == 1 then :liked
-              elsif @exists.reset.bind(post_id).next then :already_liked
-              else :missing
-              end
-    batch.wait
-    outcome
+    submit(Job.new(:like, user_id, post_id))
   end
 
   def ping
     @ping.reset.next
   end
 
+  # Called between executor passes, so no transaction is open.
   def checkpoint
-    @db.execute("PRAGMA wal_checkpoint(PASSIVE)") unless @batch
+    @db.execute("PRAGMA wal_checkpoint(PASSIVE)")
   rescue Extralite::Error
     nil # retried on the next tick
   end
 
   private
 
-  # Synchronous, so nothing else runs between BEGIN and joining the batch.
-  def begin_batch
-    return @batch if @batch
-
-    @db.execute("BEGIN IMMEDIATE")
-    batch = @batch = Async::Promise.new
-    Async do |task|
-      task.yield # let every request that is ready in this pass join the batch
-      commit(batch)
+  def submit(job)
+    job.fiber = Fiber.current
+    @queue << job
+    if @idle
+      @idle = false
+      Fiber.scheduler.push(@executor)
     end
-    batch
+    Fiber.scheduler.transfer # until the executor pushes this fiber back
+    raise job.error if job.error
+
+    job.result
   end
 
-  def commit(batch)
-    @batch = nil
-    begin
-      @db.execute("COMMIT")
-    rescue Extralite::Error => error
-      @db.execute("ROLLBACK") if @db.transaction_active?
-      return batch.reject(error)
+  def run
+    @executor = Fiber.current
+    loop do
+      if @queue.empty?
+        @idle = true
+        Fiber.scheduler.transfer
+      end
+      drain
     end
-    batch.resolve(true)
+  end
+
+  def drain
+    jobs = @queue
+    @queue = []
+    writes = jobs.any? { |job| job.kind == :create || job.kind == :like }
+    @db.execute("BEGIN IMMEDIATE") if writes
+    jobs.each { |job| perform(job) }
+    if writes
+      begin
+        @db.execute("COMMIT")
+      rescue Extralite::Error => error
+        @db.execute("ROLLBACK") if @db.transaction_active?
+        jobs.each { |job| job.error = error }
+      end
+    end
+  rescue StandardError => error
+    @db.execute("ROLLBACK") if @db.transaction_active? rescue nil
+    jobs.each { |job| job.error ||= error }
+  ensure
+    jobs&.each { |job| Fiber.scheduler.push(job.fiber) if job.fiber.alive? }
+  end
+
+  def perform(job)
+    job.result =
+      case job.kind
+      when :feed then @feed.reset.next
+      when :post then @post.reset.bind(job.a).next
+      when :create
+        document = @create.reset.bind(job.a, job.c, job.b).next
+        @create.reset # finish the statement so COMMIT doesn't see it in progress
+        document
+      when :like
+        if @like.execute(job.a, job.b) == 1 then :liked
+        elsif @exists.reset.bind(job.b).next then :already_liked
+        else :missing
+        end
+      end
+  rescue Extralite::Error => error
+    job.error = error
   end
 end
 

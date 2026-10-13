@@ -23,6 +23,31 @@ class Pressure
   end
 end
 
+# Accepts connections like IO::Endpoint's default wrapper, but without keeping each peer's Addrinfo
+# alive for the connection's lifetime (Falcon only uses it for debug logging).
+class Acceptor < IO::Endpoint::Wrapper
+  def accept(server, **)
+    loop do
+      socket = accept_socket(server)
+      Fiber.schedule { yield socket, nil }
+    end
+  end
+
+  private
+
+  def accept_socket(server)
+    server.accept.first
+  end
+end
+
+# Falcon's server, minus its per-request metrics (two counters and a body wrapper per request).
+# Connection metrics stay: the pressure guard reads the open-connection count.
+class FeedServer < Falcon::Server
+  def call(request)
+    @delegate.call(request)
+  end
+end
+
 host = ENV.fetch("HOST", "127.0.0.1")
 port = Integer(ENV.fetch("PORT", "3000"))
 store = Store.new(ENV.fetch("SQLITE_PATH"))
@@ -30,13 +55,18 @@ utilization = Async::Utilization::Registry.new
 pressure = Pressure.new(utilization.metric(:connections_active))
 app = App.new(store, ENV.fetch("JWT_SECRET"), pressure)
 
-# Idle keep-alive connections stay open 75 s, longer than Nginx's 60 s upstream keepalive_timeout.
-endpoint = Async::HTTP::Endpoint.parse("http://#{host}:#{port}", reuse_address: true, timeout: 75)
+options = { reuse_address: true }
+options[:wrapper] = Acceptor.new unless ENV["EDGE_ACCEPTOR"] == "0"
+timeout = ENV.fetch("EDGE_TIMEOUT", "0").to_i
+options[:timeout] = timeout if timeout.positive?
+endpoint = Async::HTTP::Endpoint.parse("http://#{host}:#{port}", **options)
 
 GC.compact
 Process.warmup if Process.respond_to?(:warmup)
 
 Async do |task|
+  store.start
+
   task.async do
     loop do
       sleep 1
@@ -45,6 +75,7 @@ Async do |task|
     end
   end
 
-  Falcon::Server.new(app, endpoint, utilization_registry: utilization).run
+  server_class = ENV["EDGE_LEAN_CALL"] == "0" ? Falcon::Server : FeedServer
+  server_class.new(app, endpoint, utilization_registry: utilization).run
   $stderr.puts "listening on #{host}:#{port}"
 end
