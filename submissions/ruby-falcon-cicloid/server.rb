@@ -55,11 +55,9 @@ utilization = Async::Utilization::Registry.new
 pressure = Pressure.new(utilization.metric(:connections_active))
 app = App.new(store, ENV.fetch("JWT_SECRET"), pressure)
 
-options = { reuse_address: true }
-options[:wrapper] = Acceptor.new unless ENV["EDGE_ACCEPTOR"] == "0"
-timeout = ENV.fetch("EDGE_TIMEOUT", "0").to_i
-options[:timeout] = timeout if timeout.positive?
-endpoint = Async::HTTP::Endpoint.parse("http://#{host}:#{port}", **options)
+# No socket timeout: idle keep-alive connections stay open until the client closes them (at least the
+# 65 s Nginx needs), and no timer is armed per read on each of tens of thousands of connections.
+endpoint = Async::HTTP::Endpoint.parse("http://#{host}:#{port}", reuse_address: true, wrapper: Acceptor.new)
 
 GC.compact
 Process.warmup if Process.respond_to?(:warmup)
@@ -75,7 +73,6 @@ Async do |task|
     end
   end
 
-  server_class = ENV["EDGE_LEAN_CALL"] == "0" ? Falcon::Server : FeedServer
-  server_class.new(app, endpoint, utilization_registry: utilization).run
+  FeedServer.new(app, endpoint, utilization_registry: utilization).run
   $stderr.puts "listening on #{host}:#{port}"
 end
