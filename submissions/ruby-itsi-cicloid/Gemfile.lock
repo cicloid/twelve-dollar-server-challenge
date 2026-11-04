@@ -1,0 +1,39 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    ffi (1.17.4)
+    itsi-server (0.2.27)
+      json (~> 2)
+      prism (~> 1.4)
+      rack (>= 1.6)
+      rb_sys (~> 0.9.91)
+    json (2.21.2)
+    prism (1.9.0)
+    rack (3.2.8)
+    rake-compiler-dock (1.12.0)
+    rb_sys (0.9.130)
+      rake-compiler-dock (= 1.12.0)
+    rbnacl (7.1.2)
+      ffi (~> 1)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  ffi (= 1.17.4)
+  itsi-server (= 0.2.27)
+  json (= 2.21.2)
+  rbnacl (= 7.1.2)
+
+CHECKSUMS
+  ffi (1.17.4) sha256=bcd1642e06f0d16fc9e09ac6d49c3a7298b9789bcb58127302f934e437d60acf
+  itsi-server (0.2.27) sha256=074c5cee86a144c08e204c200acfd837fa54900ed6783425c03e5f87c6cf8059
+  json (2.21.2) sha256=1f1d3b7cf2b3ba1a69beca0bb6db13d5438b80bff3cd54cdaaa620b9b07c1c6a
+  prism (1.9.0) sha256=7b530c6a9f92c24300014919c9dcbc055bf4cdf51ec30aed099b06cd6674ef85
+  rack (3.2.8) sha256=1fecc85e463ebc7a2a945fff829ffcd549babeb1556384796fad946c28dc4ec7
+  rake-compiler-dock (1.12.0) sha256=f13205c2738f3d2053afcd03491a9e4541b22a59a0bfc53fc8bc883bd8188023
+  rb_sys (0.9.130) sha256=7d486d99c1da02635515deaf9860fc5aea90bb4ab2589b2deec7fdc7d3548615
+  rbnacl (7.1.2) sha256=c58433e93b390a7b8c03a9da9e54f2de67e6cc3d6731553265299c6aac889a60
+
+BUNDLED WITH
+  4.0.20

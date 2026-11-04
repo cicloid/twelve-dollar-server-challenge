@@ -1,0 +1,6 @@
+source "https://rubygems.org"
+
+gem "itsi-server", "0.2.27" # built from source (Rust), see build.sh
+gem "rbnacl", "7.1.2"
+gem "ffi", "1.17.4" # rbnacl
+gem "json", "2.21.2" # itsi-server needs json ~> 2
