@@ -8,3 +8,7 @@ rackup_file "./config.ru"
 # which includes keep-alive connections idle between requests: load-test users think for longer
 # than that, so they'd reconnect for almost every request.
 header_read_timeout 75.0
+
+# Requests wait for the Ruby thread in a bounded queue of 30 per thread by default, and Itsi answers
+# 503 at once when it's full: a burst of more than 30 arrivals got 503s even at p99 under 10 ms.
+ruby_thread_request_backlog_size 100_000
