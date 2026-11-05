@@ -61,16 +61,19 @@ settings was OOM-killed at about 45,000 open connections and 1.6 GB. Itsi also u
 descriptors, so it can't hold more than 65,535 connections on this box.
 
 **A 4-vCPU VM** (4 vCPU on 2 physical cores, 8 GB, descriptor limit 1,048,576), still one worker
-and one Ruby thread, so only Itsi's Rust threads use the extra cores; default request backlog:
+and one Ruby thread, so only Itsi's Rust threads use the extra cores:
 
-| | 15,000 users | 30,000 users | 60,000 users |
-|---|---:|---:|---:|
-| p95 / p99 | 0.7 / 5.3 ms | 0.7 / 8.5 ms | 0.8 / 2.9 ms |
-| Errors (all 503, the backlog) | 0.58% | 1.00% | 2.82% |
-| CPU per request, all threads | 150 µs | 135 µs | 132 µs |
-| Peak RSS | 892 MB | 1,598 MB | 2,992 MB |
+| | 15,000 users | 30,000 users | 60,000 users | 60,000 users, backlog 100,000 |
+|---|---:|---:|---:|---:|
+| Result | pass | pass (at the limit) | fail | **pass** |
+| p95 / p99 | 0.7 / 5.3 ms | 0.7 / 8.5 ms | 0.8 / 2.9 ms | 1.9 / 20.6 ms |
+| Errors (503, the backlog) | 0.58% | 1.00% | 2.82% | 0 |
+| CPU per request, all threads | 150 µs | 135 µs | 132 µs | 133 µs |
+| Peak RSS | 892 MB | 1,598 MB | 2,992 MB | 3,029 MB |
 
-Latency stays low with the extra cores, but memory keeps growing at about 50 KB per connection.
+The first three columns ran with Itsi's default backlog. With the extra cores and memory Itsi holds
+60,000 users at 5,900 requests a second, the rate `ruby-cring-cicloid` serves on one vCPU with
+252 MB, at about 50 KB per connection.
 
 Itsi's own benchmarks use a few hundred connections over loopback. This load holds tens of
 thousands of mostly idle keep-alive connections, which is a different test. A run that served
